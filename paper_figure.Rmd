@@ -28,7 +28,7 @@ total_count = tiss@meta.data$nCount_RNA
 dat_alra = as.matrix(tiss[["alra"]]@data)[selected_genes,]
 ```
 
-# SupFig - Bone-marrow Cell Embedding
+# Fig. S1 - Bone-marrow Cell Embedding
 ```{r}
 coldef = setNames(colorRampPalette(brewer.pal(12, "Paired"))(length(unique(cell_label))),unique(cell_label))
 p = DimPlot(tiss, group.by = "cell_ontology_class",label = FALSE, cols = coldef) + guides(color = guide_legend(ncol = 1,override.aes = list(size = 3))) + labs(title = NULL)
@@ -36,7 +36,7 @@ p = DimPlot(tiss, group.by = "cell_ontology_class",label = FALSE, cols = coldef)
 ggsave(filename = "supfig-bonemarrow.png", plot = p, width = 8, height = 5, dpi = 300)
 ```
 
-# Fig - Pipeline
+# Fig. 1 - LMD Workflow
 ```{r}
 source("LMD_function.R", echo = F)
 
@@ -50,11 +50,13 @@ P_ls = Obtain_Pls(W = W, max_time = 2^15)
 rho = Rowwise_normalize(dat[,colnames(W)])
 res = fast_calculate_multi_score(W = W, init_state = rho, P_ls = P_ls)
 ```
+## Fig. 1A
 ```{r}
 # Plot knn graph
 p = plot_knn_graph(affinity_m = W, layout = visual_space)
 ggsave(filename = "fig-pipeline1.png", plot = p, width = 6, height = 5, dpi = 300)
 ```
+## Fig. 1C
 ```{r}
 # Check Diffusion KL pattern for several genes
 # good gene: Igll1,Fcnb # garbage marker: Fkbp1b, Tnks1bp1, Magi2,Uchl4
@@ -64,7 +66,9 @@ check_time = c(0,2^3,2^10,2^15)
 p = Visualize_score_pattern(res, genes = genes, add_point = check_time)
 
 ggsave(filename = "fig-pipeline2.png", plot = p, width = 10, height = 5)
-
+```
+## Fig. 1B
+```{r}
 # Check Gene Diffusion on Cell graph by time
 pl = lapply(1:length(genes),function(i){
   gene = genes[i]
@@ -74,7 +78,7 @@ p = as.ggplot(pl[[1]]) / as.ggplot(pl[[2]] & labs(title = NULL))
 ggsave(filename = "fig-pipeline3.png", plot = p, width = 16, height = 8)
 ```
 
-# Fig - the AUROC given the rank and the ground truth
+# Fig. 2A - Marker Identification Benchmark
 ```{r}
 library("RColorBrewer")
 library("dplyr")
@@ -120,7 +124,50 @@ fig = fig + theme(
 ggsave(filename = "fig-known_marker_comparison.png", plot = fig, width = 8, height = 5)
 ```
 
-# Fig - Gene Ranking Comparisons between LMD and Other Methods
+# Fig. 2B - Separability Benchmark
+```{r}
+path = "./benchmark_result/"
+tissue_name = "marrow_facs"
+score_measure = read.table(paste0(path,tissue_name,"_density_index.csv"),header = TRUE)
+score_measure = score_measure %>% filter(Method!="wilcox_no_filter")
+score_measure$Method = ifelse(score_measure$Method %in% names(method_fullname),method_fullname[score_measure$Method],score_measure$Method)
+
+baseline = score_measure %>% filter(Method == "All genes") %>%.$DensityIndex
+max_x = score_measure %>% filter(Method!="All genes") %>%.$TopGene %>% max()
+
+score_measure$'color' = coldef[score_measure$Method]
+score_measure[score_measure$Method == "All genes","color"] = "black"
+score_measure$'line_type' = "solid"
+score_measure[score_measure$Method == "All genes","line_type"] = "dashed"
+
+score_measure[grepl("Seurat",score_measure$Method),"Method"] = "Seurat v4"
+
+
+fig = ggplot(score_measure %>% filter(Method!="All genes") %>% filter(TopGene >= 100), aes(x = TopGene, y = DensityIndex, color = Method, group = Method, linetype = Method),linewidth = 2) + 
+  geom_line(lwd = 1) +
+  scale_x_log10(breaks = 10^(2:4), labels = expression(10^2, 10^3, 10^4)) +
+    # expand_limits(x = c(50, 10^4)) +
+  geom_hline(aes(yintercept = baseline, color = "All genes", linetype = "All genes")) +
+  scale_color_manual(values = score_measure[,c("Method","color")] %>% distinct() %>% tibble::deframe()) + 
+  scale_linetype_manual(values = score_measure[,c("Method","line_type")] %>% distinct() %>% tibble::deframe()) +
+  theme(
+    legend.title = element_blank(),
+    legend.text = element_text(size = 10),
+    legend.position = "bottom",
+    legend.justification = 1,
+    axis.title.x = element_text(size = 15),
+    axis.title.y = element_text(size = 15),
+    axis.text.x = element_text(size = 10),
+    axis.text.y = element_text(size = 10),
+    panel.grid = element_blank(),
+    panel.background = element_blank(),
+    axis.line = element_line(colour = "black"))
+  # geom_text_repel(data = score_measure %>%  filter(Method!="all genes") %>% group_by(Method) %>% slice_head(n = 2) %>% slice_tail(n = 1), aes(label = Method), hjust = 0)
+
+ggsave(filename = "fig-densityindex.png", plot = fig, width = 5, height = 5)
+```
+
+# Fig. 3 - Gene Ranking Comparisons
 ```{r}
 path = "./benchmark_result/"
 tissue_name = "marrow_facs"
@@ -129,6 +176,7 @@ df_benchmark = read.table(paste0(path,tissue_name,"_benchmark_rank_table.csv"))
 method_vs = "lmd"
 method_vs_set = c("wilcox_default","hotspot","marcopolo","semi","haystack")
 ```
+## Fig. 3A
 ```{r}
 sub = do.call(c,lapply(method_vs_set,function(method){
   sub = c(which(df_benchmark[,method] <= 100 & df_benchmark[,method_vs] > 500),
@@ -167,6 +215,8 @@ ggsave(filename = "fig-ranking_comparison2.png", plot = fig, width = 25, height 
 
 write.csv(df_label_all,file = "./marrow_result/gene_rank_comparison.csv",row.names = TRUE)
 ```
+
+## Fig. 3B
 ```{r}
 pl_rank = lapply(method_vs_set,function(method){
   df_label = data.frame(df_benchmark[,c(method,method_vs)],label = rownames(df_benchmark))
@@ -212,148 +262,9 @@ ggsave(filename = "fig-ranking_comparison1.png", plot = p, width = 25, height = 
 ```
 
 
-<!-- # Fig - Gene Co-localization Module Benchmark -->
-<!-- ```{r} -->
-<!-- library(cowplot) -->
-<!-- library(patchwork) -->
-<!-- source("./LMD_function.R", echo = F) -->
-
-<!-- path = "./benchmark_result/" -->
-<!-- tissue_name = "marrow_facs" -->
-
-<!-- df_benchmark = read.table(paste0(path,tissue_name,"_benchmark_rank_table.csv")) -->
-<!-- method = "lmd" -->
-<!-- topn = 2000 -->
-<!-- # Gene prioritized by lmd -->
-<!-- pl1 = lapply(c("wilcox_default","haystack","hotspot","hvg"),function(method_vs){ -->
-<!--   local_gene = setdiff(rownames(df_benchmark)[order(df_benchmark[,method_vs])][1:topn], rownames(df_benchmark)[order(df_benchmark[,method])][1:topn]) -->
-
-<!--   ## Gene-gene distance(similarity)--------- -->
-<!--   distance_method = "jaccard" -->
-<!--   clustering_method = "average" -->
-<!--   dist = Calculate_distance(dat_alra[local_gene,], method = distance_method) -->
-
-<!--   gene_hree = hclust(dist, method = clustering_method) -->
-<!--   gene_partition = cutree(gene_hree,k=5) -->
-<!--   names(gene_partition) = labels(dist) -->
-
-<!--   top5 <- names(sort(table(gene_partition),decreasing = TRUE))[1:5] -->
-<!--   annotation_df = data.frame(Module = gene_partition) -->
-<!--   ann_colors = list( -->
-<!--     Module = c(setNames(colorRampPalette(brewer.pal(9, "Set1"))(5),1:5))) -->
-
-<!--   p_heatmap = pheatmap(as.matrix(dist), -->
-<!--                 annotation_col = annotation_df, -->
-<!--                 cluster_rows = gene_hree, -->
-<!--                 cluster_cols = gene_hree, -->
-<!--                 treeheight_row = 0, -->
-<!--                 annotation_colors = ann_colors,  -->
-<!--                 col=colorRampPalette(c("red","white","blue4"))(99), -->
-<!--                 show_colnames = FALSE, -->
-<!--                 show_rownames = FALSE, -->
-<!--                 annotation_legend = TRUE, -->
-<!--                 silent = TRUE) -->
-<!--   pl_module = FeaturePlot_meta(dat,visual_space,gene_partition) -->
-<!--   legend <- get_legend(pl_module[[1]]) -->
-<!--   prow <- cowplot::plot_grid(plotlist = lapply(pl_module,function(x) x + theme(legend.position="none")), ncol = ceiling(length(pl_module)/2)) -->
-
-<!--   as.ggplot(p_heatmap) + cowplot::plot_grid(prow, legend, rel_widths = c(ceiling(length(pl_module)/2), .2)) + plot_annotation(title = sprintf("Genes in top 2000 by %s but not by %s (N = %d)",method_fullname[method_vs],method_fullname[method],length(local_gene))) + plot_layout(ncol = 2, widths = c(2, 3)) -->
-<!-- }) -->
-<!-- # The other way around -->
-<!-- pl2 = lapply(c("wilcox_default","haystack","hotspot","hvg"),function(method_vs){ -->
-<!--   local_gene = setdiff(rownames(df_benchmark)[order(df_benchmark[,method])][1:topn], rownames(df_benchmark)[order(df_benchmark[,method_vs])][1:topn]) -->
-
-<!--   ## Gene-gene distance(similarity)--------- -->
-<!--   distance_method = "jaccard" -->
-<!--   clustering_method = "average" -->
-<!--   dist = Calculate_distance(dat_alra[local_gene,], method = distance_method) -->
-
-<!--   gene_hree = hclust(dist, method = clustering_method) -->
-<!--   gene_partition = cutree(gene_hree,k=5) -->
-<!--   names(gene_partition) = labels(dist) -->
-
-<!--   top5 <- names(sort(table(gene_partition),decreasing = TRUE))[1:5] -->
-<!--   annotation_df = data.frame(Module = gene_partition) -->
-<!--   ann_colors = list( -->
-<!--     Module = c(setNames(colorRampPalette(brewer.pal(9, "Set1"))(5),1:5))) -->
-
-<!--   p_heatmap = pheatmap(as.matrix(dist), -->
-<!--                 annotation_col = annotation_df, -->
-<!--                 cluster_rows = gene_hree, -->
-<!--                 cluster_cols = gene_hree, -->
-<!--                 treeheight_row = 0, -->
-<!--                 annotation_colors = ann_colors,  -->
-<!--                 col=colorRampPalette(c("red","white","blue4"))(99), -->
-<!--                 show_colnames = FALSE, -->
-<!--                 show_rownames = FALSE, -->
-<!--                 annotation_legend = TRUE, -->
-<!--                 silent = TRUE) -->
-<!--   pl_module = FeaturePlot_meta(dat,visual_space,gene_partition) -->
-<!--   legend <- get_legend(pl_module[[1]]) -->
-<!--   prow <- cowplot::plot_grid(plotlist = lapply(pl_module,function(x) x + theme(legend.position="none")), ncol = ceiling(length(pl_module)/2)) -->
-
-<!--   as.ggplot(p_heatmap) + cowplot::plot_grid(prow, legend, rel_widths = c(ceiling(length(pl_module)/2), .2)) + plot_annotation(title = sprintf("Genes in top 2000 by %s but not by %s (N = %d)",method_fullname[method],method_fullname[method_vs],length(local_gene))) + plot_layout(ncol = 2, widths = c(2, 3)) -->
-<!-- }) -->
-
-<!-- pdf(width = 12.5,height = 5) -->
-<!-- pl1 -->
-<!-- dev.off() -->
-
-<!-- pdf(width = 12.5,height = 5) -->
-<!-- pl2 -->
-<!-- dev.off() -->
-<!-- ``` -->
-
-
-# Fig - Density Index
+# Fig. S7 - Robustness Test
+Rank Stability
 ```{r}
-path = "./benchmark_result/"
-tissue_name = "marrow_facs"
-score_measure = read.table(paste0(path,tissue_name,"_density_index.csv"),header = TRUE)
-score_measure = score_measure %>% filter(Method!="wilcox_no_filter")
-score_measure$Method = ifelse(score_measure$Method %in% names(method_fullname),method_fullname[score_measure$Method],score_measure$Method)
-
-baseline = score_measure %>% filter(Method == "All genes") %>%.$DensityIndex
-max_x = score_measure %>% filter(Method!="All genes") %>%.$TopGene %>% max()
-
-score_measure$'color' = coldef[score_measure$Method]
-score_measure[score_measure$Method == "All genes","color"] = "black"
-score_measure$'line_type' = "solid"
-score_measure[score_measure$Method == "All genes","line_type"] = "dashed"
-
-score_measure[grepl("Seurat",score_measure$Method),"Method"] = "Seurat v4"
-
-# line_type = replace(coldef,names(coldef),"solid")
-# line_type["Seurat v4 Wilcoxon unfiltered"] = "twodash"
-# line_type["All genes"] = "dashed"
-
-fig = ggplot(score_measure %>% filter(Method!="All genes") %>% filter(TopGene >= 100), aes(x = TopGene, y = DensityIndex, color = Method, group = Method, linetype = Method),linewidth = 2) + 
-  geom_line(lwd = 1) +
-  scale_x_log10(breaks = 10^(2:4), labels = expression(10^2, 10^3, 10^4)) +
-    # expand_limits(x = c(50, 10^4)) +
-  geom_hline(aes(yintercept = baseline, color = "All genes", linetype = "All genes")) +
-  scale_color_manual(values = score_measure[,c("Method","color")] %>% distinct() %>% tibble::deframe()) + 
-  scale_linetype_manual(values = score_measure[,c("Method","line_type")] %>% distinct() %>% tibble::deframe()) +
-  theme(
-    legend.title = element_blank(),
-    legend.text = element_text(size = 10),
-    legend.position = "bottom",
-    legend.justification = 1,
-    axis.title.x = element_text(size = 15),
-    axis.title.y = element_text(size = 15),
-    axis.text.x = element_text(size = 10),
-    axis.text.y = element_text(size = 10),
-    panel.grid = element_blank(),
-    panel.background = element_blank(),
-    axis.line = element_line(colour = "black"))
-  # geom_text_repel(data = score_measure %>%  filter(Method!="all genes") %>% group_by(Method) %>% slice_head(n = 2) %>% slice_tail(n = 1), aes(label = Method), hjust = 0)
-
-ggsave(filename = "fig-densityindex.png", plot = fig, width = 5, height = 5)
-```
-
-# SupFig - Sensitivity Test
-```{r}
-## Rank Stability
 score_df = read.table(paste0(path,tissue_name,"_different_knn.csv"),header = TRUE)
 score_ranked <- data.frame(score_df) %>% mutate(across(everything(), rank))
 base = "kNN5"
@@ -483,55 +394,6 @@ p = Visualize_jaccard_mtx(jaccard_index_pruned)
 p = as.ggplot(p) + coord_fixed()
 ggsave(filename = "supfig-ct-specific-module2.png", plot = p, width = 8, height = 10)
 ```
-```{r}
-# # Bipartite Plot
-# jaccard_thred = 0.4
-# 
-# library(igraph)
-# library("grid") 
-# library("gridExtra") 
-# 
-# df_edge <- as.data.frame(as.table(jaccard_index))
-# colnames(df_edge) = c("from","to","weight")
-# df_edge <- subset(df_edge, weight > jaccard_thred)
-# df_edge$width = ifelse(df_edge$weight > 0.8,2,0.5)
-# df_node = data.frame(name=c(names(module_color),names(celltype_color)),color = c(module_color,celltype_color))
-# df_node$type = ifelse(df_node$name %in% names(module_color),TRUE,FALSE)
-# 
-# # Define specific color for module
-# rownames(df_node) = df_node$name
-# ct_module = names(which(apply(jaccard_index,2,max) > jaccard_thred))
-# ct_subtype_module = c(4,5,6,30,39,42,43)
-# ct_multype_module = c(2,13,19,33,36,54)
-# cc_module = c(16,17,18,31)
-# df_node[names(module_color),"color"] = "grey"
-# df_node[ct_module,"color"] = "red"
-# df_node[ct_multype_module,"color"] = "purple"
-# df_node[ct_subtype_module,"color"] = "yellow"
-# df_node[cc_module,"color"] = "green"
-# 
-# g <- graph_from_data_frame(df_edge, directed=FALSE, vertices=df_node)
-# V(g)$shape <- ifelse(V(g)$type, "circle", "square")
-# E(g)$color <- ifelse(E(g)$weight > 0.8, "red", "grey")
-# l <- layout_as_bipartite(g, types=!V(g)$type)
-# 
-# plot(g, layout=l, vertex.size=2, vertex.label=ifelse(V(g)$type, V(g)$name, NA), vertex.frame.color = NA, asp=0.2, 
-#      vertex.label.cex=0.5,
-#      vertex.label.dist=-1,
-#      vertex.label.degree=pi/2)
-# 
-# # Create Node Legend & Edge Legend
-# color_label = c("green" = "cell cycle",purple = "multi cell type",red = "cell type",yellow = "cell subtype")
-# df_node$subtype = color_label[df_node$color]
-# 
-# p <- ggplot(df_node %>% filter(type), aes(x = 0, y = 0,color = subtype)) + geom_point(size = 7) + scale_color_manual(values= setNames(names(color_label),color_label)) + theme_minimal() + labs(color = "Module Type") + theme(legend.direction="horizontal")
-# grid.newpage()
-# grid.draw(get_legend(p))
-# 
-# p <- ggplot(df_node %>% filter(!type), aes(x = 0, y = 0,color = name)) + geom_point(size = 7,shape = 15) + scale_color_manual(values= df_node %>% filter(!type) %>% pull(color,name)) + theme_minimal() + labs(color = "Cell Type") + theme(legend.direction="horizontal")
-# grid.newpage()
-# grid.draw(get_legend(p))
-```
 
 ## Droplet Jaccard Comparison
 ```{r}
@@ -620,17 +482,6 @@ ggsave(filename = "supfig-joint-module.png", plot = p, width = 5*3, height = 3)
 ```
 
 # Fig - Subtype Investigation
-late pro -> precursor B -> immature -> Naive B
-8(Lef1, Slamf7) - lateproB, 6(Vreb1,Igll1)- early preB, 7(Rag1, Rag2)/11(Chchd10) - lateproB-preB, 9(Ms4a1, Cd22) - immature-naive, 10 (Fcer2a, Ms4a4c, Cxcr5) - naive B
-
-13 (Fcrla,Pax5,Cd79a,Cd19)
-Dntt: 29 (HSC)
-Rag1, Rag2, Dntt: early pro-B
-Pax5, Vpreb1, Dntt, Cd19, Cd22-: late-proB
-Vpreb1-, Dntt-, Pax5, Rag1, Rag2, Cd19, Chchd10, Cd22-, : pre-B
-Chchd10,Cd79a,Cd19,Ms4a1,Pax5,Cd22: immature
-Cd79a, Cd19, Ms4a1, Pax5, Rag1- Rag2-, Chchd10, Cd22: naive B
-
 ```{r}
 B_module = c(7,9,10)
 B_module_genes = list("8" = c("Lef1","Slamf7"),
@@ -654,14 +505,6 @@ p = wrap_plots(wrap_plots(p) & theme(axis.title = element_blank(),axis.text = el
 ggsave(filename = "fig-subtypeB.png", plot = p, width = 4*3, height = 3)
 ```
 
-Granulocyte: 
-granulopoietic -> granulocyte
-45 -> 44 -> 41 -> 43
-45: "Fcnb"
-44: "Camp", "Ltf",
-41: "Retnlg", "Cxcr2"
-43: Stfa2l1, Il1b, Gm5483, H2-Q10, and Irg1
-
 ```{r}
 G_module = c(45,44,41,43)
 G_module_genes = list("45" = c("Fcnb"),
@@ -683,29 +526,4 @@ p = wrap_plots(wrap_plots(p) & theme(axis.title = element_blank(),axis.text = el
 
 ggsave(filename = "fig-subtypeG.png", plot = p, width = 5*3, height = 3)
 ```
-
-
-<!-- ```{r} -->
-<!-- p <- DimPlot(tiss, group.by = "cell_ontology_class",label = FALSE, cols = setNames(scales::hue_pal()(2),c("late pro-B cell","granulocyte"))) + ggtitle("Pre-annotated cell types") + theme( -->
-<!--   axis.title = element_blank(), -->
-<!--       axis.text = element_blank(), -->
-<!--       axis.ticks=element_blank(), -->
-<!--       legend.title = element_text(size = 20), -->
-<!--       legend.text = element_text(size = 15), -->
-<!--       axis.line = element_blank()) -->
-<!-- ggsave(filename = "fig-subtype1.png", plot = p, width = 6, height = 5) -->
-
-<!-- pl1 = FeaturePlot(tiss,features = names(gene_partition)[gene_partition %in% c(5,6)][c(1:3,7,9)],ncol = 5,order = TRUE) -->
-<!-- pl2 = FeaturePlot(tiss,features = names(gene_partition)[gene_partition == 43][1:5],ncol = 5,order = TRUE) -->
-<!-- # pl_module_subtype = lapply(pl_module[c(5,6,43)],function(x) x + scale_color_gradient(low = "lightgrey", high = "blue")) -->
-
-<!-- pl = wrap_plots(pl1 & theme(plot.title = element_text(color = scales::hue_pal()(2)[1])), -->
-<!--                 pl2 & theme(plot.title = element_text(color = scales::hue_pal()(2)[2])),nrow = 2) & labs(color = "Expression") & theme( -->
-<!--       plot.title = element_text(face="bold", size = 30), -->
-<!--       legend.title = element_text(size = 20), -->
-<!--       legend.text = element_text(size = 15), -->
-<!--       axis.title = element_blank(),axis.text = element_blank(), axis.ticks=element_blank(),axis.line = element_blank()) -->
-
-<!-- ggsave(filename = "fig-subtype2.png", plot = pl, width = 4*5 + 3, height = 4*2) -->
-<!-- ``` -->
 
