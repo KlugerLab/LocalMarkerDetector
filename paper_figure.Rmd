@@ -78,7 +78,8 @@ p = as.ggplot(pl[[1]]) / as.ggplot(pl[[2]] & labs(title = NULL))
 ggsave(filename = "fig-pipeline3.png", plot = p, width = 16, height = 8)
 ```
 
-# Fig. 2A - Marker Identification Benchmark
+# Fig.2 - Benchmark
+## Fig. 2A - Marker Identification Benchmark
 ```{r}
 library("RColorBrewer")
 library("dplyr")
@@ -124,7 +125,7 @@ fig = fig + theme(
 ggsave(filename = "fig-known_marker_comparison.png", plot = fig, width = 8, height = 5)
 ```
 
-# Fig. 2B - Separability Benchmark
+## Fig. 2B - Separability Benchmark
 ```{r}
 path = "./benchmark_result/"
 tissue_name = "marrow_facs"
@@ -261,9 +262,114 @@ p = (wrap_plots(pl_rank,nrow = 1) & theme(legend.position="bottom")) + plot_layo
 ggsave(filename = "fig-ranking_comparison1.png", plot = p, width = 25, height = 6)
 ```
 
+# Fig. 4 - Gene Module specificity
+## Fig. 4B - Cell_cycle_Annotation
+```{r}
+cell_cycle = read.csv("./marrow_result/annotated_cell_cycle.csv")
+tiss$'Phase' = cell_cycle %>% filter(Dataset == "FACS") %>%.$Phase
+tiss$Phase = factor(tiss$Phase,levels = c("G1","S","G2M"))
+p1 = DimPlot(tiss,group.by = "Phase", cols = c("grey",scales::hue_pal()(3)[3:2])) + labs(title = "Phase annotated by Seurat",color = "Phase") + theme(
+  plot.title = element_text(size = 10),
+  axis.title = element_blank(),
+      axis.text = element_blank(),
+      axis.ticks=element_blank(),
+      legend.title = element_text(size = 20),
+      legend.text = element_text(size = 15),
+      axis.line = element_blank())
+tiss_droplet$'Phase' = cell_cycle %>% filter(Dataset == "Droplet") %>%.$Phase
+tiss_droplet$Phase = factor(tiss_droplet$Phase,levels = c("G1","S","G2M"))
+p2 = DimPlot(tiss_droplet,group.by = "Phase", cols = c("grey",scales::hue_pal()(3)[3:2])) + labs(title = "Phase annotated by Seurat",color = "Phase") + theme(
+  axis.title = element_blank(),
+      axis.text = element_blank(),
+      axis.ticks=element_blank(),
+      legend.title = element_text(size = 20),
+      legend.text = element_text(size = 15),
+      axis.line = element_blank())
+
+cc_module = c(32,31,18)
+pl_module_cc = lapply(cc_module,function(module){
+  FeaturePlot_custom(value = cell_block[,module], coord = visual_space, value_name = "Module Score",title_name = sprintf("Module %s (%d genes)",module, sum(gene_partition == module)))
+})
+pl_module_cc_droplet = lapply(cc_module,function(module){
+  FeaturePlot_custom(value = cell_block_droplet[,module], coord = data.frame(tiss_droplet@reductions$tsne@cell.embeddings), value_name = "Module Score",title_name = sprintf("Module %s (%d genes)",module, sum(gene_partition == module)))
+})
+p = wrap_plots(p1,wrap_plots(pl_module_cc,ncol = 3) & theme(plot.title = element_text(size = 15)) ,p2 + labs(title = NULL),wrap_plots(pl_module_cc_droplet,ncol = 3) & theme(plot.title = element_text(size = 15)) & labs(title = NULL),nrow = 2,design = "ABBB\nCDDD") + plot_layout(guides = "collect")
+
+ggsave(filename = "fig-module-cellcycle1.png", plot = p, width = 3*4 + 1, height = 3*2)
+```
+
+## Fig. 4A - Cell_cycle_Reactome_analysis
+```{r}
+df = read.csv("./marrow_result/reactome_pathway_cc.csv")
+df = df %>% filter(module %in% cc_module)
+df$GeneRatio = unlist(lapply(df$GeneRatio,function(x) eval(parse(text = x))))
+# df$GeneRatio = as.numeric(df$Count / table(gene_partition)[df$module])
+Description_order = levels(factor(df$Description))
+Description_order = rev(Description_order[order(match(Description_order,c("Cell Cycle","Cell Cycle, Mitotic","Mitotic G1 phase and G1/S transition","G1/S Transition","S Phase","M Phase","DNA Replication","Mitotic Prometaphase")))])
+df$Description = factor(df$Description,levels = Description_order) 
+df$module = factor(df$module,levels = c(32,31,18))
+
+p = ggplot(df, aes(x=module, y=Description)) +
+  geom_point(aes(size=GeneRatio, color=p.adjust), alpha=0.7) +
+  scale_color_gradientn(colors=colorRampPalette(c("red", "blue"))(99), name="p.adjust",limits = c(0,0.05)) +
+  theme_minimal() +
+  labs(size="Gene Ratio",x = "Module") +
+  theme(legend.position="right",
+        axis.title = element_text(size = 20),
+        axis.text.x = element_text(size = 15),
+      axis.text.y = element_text(size = 10),
+      legend.title = element_text(size = 20),
+      legend.text = element_text(size = 15))
+ggsave(filename = "fig-module-cellcycle2.png", plot = p, width = 10, height = 6)
+```
+## Fig. 4C - B Subtype Investigation
+```{r}
+B_module = c(7,9,10)
+B_module_genes = list("8" = c("Lef1","Slamf7"),
+                      "6" = c("Vreb1","Igll1"),
+                      "7" = c("Rag1", "Rag2"),
+                      "9" = c("Ms4a1", "Cd22"),
+                      "10" = c("Fcer2a","Ms4a4c","Cxcr5"))
+cell_id = grep("B cell",tiss$cell_ontology_class)
+cell_id = cell_id[tiss$cell_ontology_class[cell_id] != "B cell"]
+pl_Bmodule = lapply(B_module,function(module){
+  FeaturePlot_custom(value = cell_block[cell_id,module], coord = visual_space[cell_id,], value_name = "Module Score",title_name = sprintf("Module %s",module)) + labs(subtitle = paste0(B_module_genes[[as.character(module)]],collapse = ","))
+})
+pl_Bmodule = lapply(1:length(pl_Bmodule),function(i){
+  if(i!=1){pl_Bmodule[[i]] + NoLegend()}else{pl_Bmodule[[i]]}})
+
+coldef = setNames(colorRampPalette(brewer.pal(12, "Paired"))(length(unique(cell_label))),unique(cell_label))
+p = DimPlot(subset(tiss,cells = colnames(tiss)[cell_id]), group.by = "cell_ontology_class",label = TRUE, cols = coldef,repel = TRUE,label.size = 3) + NoLegend() + labs(title = NULL)
+
+p = wrap_plots(wrap_plots(p) & theme(axis.title = element_blank(),axis.text = element_blank(), axis.ticks=element_blank(), axis.line = element_blank()),(wrap_plots(pl_Bmodule,nrow = 1) &  theme(plot.title = element_text(size = 15))) + plot_layout(guides = "collect"), nrow = 1, design = "ABBB")
+
+ggsave(filename = "fig-subtypeB.png", plot = p, width = 4*3, height = 3)
+```
+## Fig. 4D - Granulocyte Subtype Investigation
+```{r}
+G_module = c(45,44,41,43)
+G_module_genes = list("45" = c("Fcnb"),
+                      "44" = c("Camp", "Ltf"),
+                      "41" = c("Retnlg", "Cxcr2"),
+                      "43" = c("Stfa2l1", "Il1b", "Gm5483", "H2-Q10", "Irg1"))
+cell_id = tiss$cell_ontology_class %in% c("granulocyte","granulocytopoietic cell")
+
+coldef = setNames(colorRampPalette(brewer.pal(12, "Paired"))(length(unique(cell_label))),unique(cell_label))
+p = DimPlot(subset(tiss,cells = colnames(tiss)[cell_id]), group.by = "cell_ontology_class",label = TRUE,cols = coldef) + NoLegend() + labs(title = NULL)
+
+pl_Gmodule = lapply(G_module,function(module){
+  FeaturePlot_custom(value = cell_block[cell_id,module], coord = visual_space[cell_id,], value_name = "Module Score",title_name = sprintf("Module %s",module)) + labs(subtitle = paste0(G_module_genes[[as.character(module)]],collapse = ","))
+})
+pl_Gmodule = lapply(1:length(pl_Gmodule),function(i){
+  if(i!=3){pl_Gmodule[[i]] + NoLegend()}else{pl_Gmodule[[i]]}})
+
+p = wrap_plots(wrap_plots(p) & theme(axis.title = element_blank(),axis.text = element_blank(), axis.ticks=element_blank(), axis.line = element_blank()),(wrap_plots(pl_Gmodule,nrow = 1) &  theme(plot.title = element_text(size = 15))) + plot_layout(guides = "collect"), nrow = 1, design = "ABBBB")
+
+ggsave(filename = "fig-subtypeG.png", plot = p, width = 5*3, height = 3)
+```
 
 # Fig. S7 - Robustness Test
-Rank Stability
+## Fig. S7A - Rank Stability
 ```{r}
 score_df = read.table(paste0(path,tissue_name,"_different_knn.csv"),header = TRUE)
 score_ranked <- data.frame(score_df) %>% mutate(across(everything(), rank))
@@ -299,8 +405,8 @@ fig = ggplot(data = df, aes(x = kNN, y = JaccardIndex, group = Top_Genes, color 
 
 ggsave(filename = "supfig-sensitivity1.png", plot = fig, width = 8, height = 5)
 ```
+## Fig. S7A - AUC Stability
 ```{r}
-## AUC stability
 auc_df = read.table(paste0(path,tissue_name,"_sensitivity_auroc.csv"),header = TRUE)
 auc_df <- auc_df %>% tidyr::pivot_longer(cols = -gt, names_to = "kNN", values_to = "AUC") %>% filter(gt %in% c("Top100","CellMarkerDB"))
 auc_df$gt = factor(auc_df$gt); levels(auc_df$gt) = c("CellMarkerDB","MacFC(Top100)")
@@ -322,7 +428,7 @@ fig = ggplot(data = auc_df, aes(x = kNN, y = AUC, group = gt, color = gt)) +
 ggsave(filename = "supfig-sensitivity2.png", plot = fig, width = 8, height = 5)
 ```
 
-# SupFig - Gene-Gene Colocolization HeatMap
+# Fig. S2 - Gene-gene Jaccard distance
 ```{r}
 load("./marrow_result/module_result.rdata")
 source("./LMD_function.R", echo = F)
@@ -348,7 +454,7 @@ p = as.ggplot(p)
 ggsave(filename = "supfig-moduleheatmap.png", plot = p, width = 10, height = 10)
 ```
 
-# SupFig - Module TSNE
+# Fig. S3 - Module TSNE
 ```{r}
 pl_module = lapply(levels(gene_partition),function(module){
   FeaturePlot_custom(value = cell_block[,module], coord = visual_space, value_name = "Module Score",title_name = sprintf("Module %s (%d genes)",module, sum(gene_partition == module))) + scale_color_gradient(limits = c(0, 1),low = "lightgrey", high = "blue")
@@ -359,8 +465,8 @@ p = (wrap_plots(pl_module,ncol = 10) & theme(plot.title = element_text(face="bol
 ggsave(filename = "supfig-moduletsne.png", plot = p, width = 30, height = 18)
 ```
 
-# SupFig-CellType-specific Module
-##  Matched on Cell Embeddings
+# Fig. S5 - CellType-specific Module
+## Fig. S5A - Module-Celltype on Cell Embeddings
 For each cell type, select the most specific modules for visualization (maximum jaccard index)
 ```{r}
 # Get CellType One-hot plot
@@ -382,7 +488,7 @@ p = (wrap_plots(pl,ncol = 7) & theme(plot.title = element_text(face="bold", size
 ggsave(filename = "supfig-ct-specific-module1.png", plot = p, width = 3*7, height = 3*4)
 ```
 
-## Jaccard Index Heatmap
+## Fig. S5B - Jaccard Index
 ```{r}
 thred = 0.4
 jaccard_index_pruned = jaccard_index[apply(jaccard_index,1,max) > thred,]
@@ -395,7 +501,7 @@ p = as.ggplot(p) + coord_fixed()
 ggsave(filename = "supfig-ct-specific-module2.png", plot = p, width = 8, height = 10)
 ```
 
-## Droplet Jaccard Comparison
+# Fig. S6 - FACS vs. Droplet
 ```{r}
 module_selected = unlist(apply(jaccard_index[rownames(jaccard_index_droplet),],1,function(x) colnames(jaccard_index)[which(x > thred)]))
 module_selected = module_selected[order(as.numeric(module_selected))]
@@ -413,117 +519,12 @@ pl <- lapply(1:length(pl), function(i){pl[[i]] + labs(title = titles[i]) + theme
 p = wrap_plots(pl,ncol = 2) + plot_layout(guides = "collect")
 ggsave(filename = "supfig-ct-specific-module3.png", plot = p, width = 10, height = 8)
 ```
-# Fig - Cell Cycle
-## Annotate CC
-```{r}
-cell_cycle = read.csv("./marrow_result/annotated_cell_cycle.csv")
-tiss$'Phase' = cell_cycle %>% filter(Dataset == "FACS") %>%.$Phase
-tiss$Phase = factor(tiss$Phase,levels = c("G1","S","G2M"))
-p1 = DimPlot(tiss,group.by = "Phase", cols = c("grey",scales::hue_pal()(3)[3:2])) + labs(title = "Phase annotated by Seurat",color = "Phase") + theme(
-  plot.title = element_text(size = 10),
-  axis.title = element_blank(),
-      axis.text = element_blank(),
-      axis.ticks=element_blank(),
-      legend.title = element_text(size = 20),
-      legend.text = element_text(size = 15),
-      axis.line = element_blank())
-tiss_droplet$'Phase' = cell_cycle %>% filter(Dataset == "Droplet") %>%.$Phase
-tiss_droplet$Phase = factor(tiss_droplet$Phase,levels = c("G1","S","G2M"))
-p2 = DimPlot(tiss_droplet,group.by = "Phase", cols = c("grey",scales::hue_pal()(3)[3:2])) + labs(title = "Phase annotated by Seurat",color = "Phase") + theme(
-  axis.title = element_blank(),
-      axis.text = element_blank(),
-      axis.ticks=element_blank(),
-      legend.title = element_text(size = 20),
-      legend.text = element_text(size = 15),
-      axis.line = element_blank())
 
-cc_module = c(32,31,18)
-pl_module_cc = lapply(cc_module,function(module){
-  FeaturePlot_custom(value = cell_block[,module], coord = visual_space, value_name = "Module Score",title_name = sprintf("Module %s (%d genes)",module, sum(gene_partition == module)))
-})
-pl_module_cc_droplet = lapply(cc_module,function(module){
-  FeaturePlot_custom(value = cell_block_droplet[,module], coord = data.frame(tiss_droplet@reductions$tsne@cell.embeddings), value_name = "Module Score",title_name = sprintf("Module %s (%d genes)",module, sum(gene_partition == module)))
-})
-p = wrap_plots(p1,wrap_plots(pl_module_cc,ncol = 3) & theme(plot.title = element_text(size = 15)) ,p2 + labs(title = NULL),wrap_plots(pl_module_cc_droplet,ncol = 3) & theme(plot.title = element_text(size = 15)) & labs(title = NULL),nrow = 2,design = "ABBB\nCDDD") + plot_layout(guides = "collect")
-
-ggsave(filename = "fig-module-cellcycle1.png", plot = p, width = 3*4 + 1, height = 3*2)
-```
-## Reactome enrichment
-```{r}
-df = read.csv("./marrow_result/reactome_pathway_cc.csv")
-df = df %>% filter(module %in% cc_module)
-df$GeneRatio = unlist(lapply(df$GeneRatio,function(x) eval(parse(text = x))))
-# df$GeneRatio = as.numeric(df$Count / table(gene_partition)[df$module])
-Description_order = levels(factor(df$Description))
-Description_order = rev(Description_order[order(match(Description_order,c("Cell Cycle","Cell Cycle, Mitotic","Mitotic G1 phase and G1/S transition","G1/S Transition","S Phase","M Phase","DNA Replication","Mitotic Prometaphase")))])
-df$Description = factor(df$Description,levels = Description_order) 
-df$module = factor(df$module,levels = c(32,31,18))
-
-p = ggplot(df, aes(x=module, y=Description)) +
-  geom_point(aes(size=GeneRatio, color=p.adjust), alpha=0.7) +
-  scale_color_gradientn(colors=colorRampPalette(c("red", "blue"))(99), name="p.adjust",limits = c(0,0.05)) +
-  theme_minimal() +
-  labs(size="Gene Ratio",x = "Module") +
-  theme(legend.position="right",
-        axis.title = element_text(size = 20),
-        axis.text.x = element_text(size = 15),
-      axis.text.y = element_text(size = 10),
-      legend.title = element_text(size = 20),
-      legend.text = element_text(size = 15))
-ggsave(filename = "fig-module-cellcycle2.png", plot = p, width = 10, height = 6)
-```
-
-# SupFig - Joint-CT Module visualization
+# Fig. S4 - Multi-celltype
 ```{r}
 level0_module = c(13,27,38,46,54)
 p = (wrap_plots(pl_module[level0_module],ncol = 5) &  theme(plot.title = element_text(size = 15))) + plot_layout(guides = "collect")
 
 ggsave(filename = "supfig-joint-module.png", plot = p, width = 5*3, height = 3)
-```
-
-# Fig - Subtype Investigation
-```{r}
-B_module = c(7,9,10)
-B_module_genes = list("8" = c("Lef1","Slamf7"),
-                      "6" = c("Vreb1","Igll1"),
-                      "7" = c("Rag1", "Rag2"),
-                      "9" = c("Ms4a1", "Cd22"),
-                      "10" = c("Fcer2a","Ms4a4c","Cxcr5"))
-cell_id = grep("B cell",tiss$cell_ontology_class)
-cell_id = cell_id[tiss$cell_ontology_class[cell_id] != "B cell"]
-pl_Bmodule = lapply(B_module,function(module){
-  FeaturePlot_custom(value = cell_block[cell_id,module], coord = visual_space[cell_id,], value_name = "Module Score",title_name = sprintf("Module %s",module)) + labs(subtitle = paste0(B_module_genes[[as.character(module)]],collapse = ","))
-})
-pl_Bmodule = lapply(1:length(pl_Bmodule),function(i){
-  if(i!=1){pl_Bmodule[[i]] + NoLegend()}else{pl_Bmodule[[i]]}})
-
-coldef = setNames(colorRampPalette(brewer.pal(12, "Paired"))(length(unique(cell_label))),unique(cell_label))
-p = DimPlot(subset(tiss,cells = colnames(tiss)[cell_id]), group.by = "cell_ontology_class",label = TRUE, cols = coldef,repel = TRUE,label.size = 3) + NoLegend() + labs(title = NULL)
-
-p = wrap_plots(wrap_plots(p) & theme(axis.title = element_blank(),axis.text = element_blank(), axis.ticks=element_blank(), axis.line = element_blank()),(wrap_plots(pl_Bmodule,nrow = 1) &  theme(plot.title = element_text(size = 15))) + plot_layout(guides = "collect"), nrow = 1, design = "ABBB")
-
-ggsave(filename = "fig-subtypeB.png", plot = p, width = 4*3, height = 3)
-```
-
-```{r}
-G_module = c(45,44,41,43)
-G_module_genes = list("45" = c("Fcnb"),
-                      "44" = c("Camp", "Ltf"),
-                      "41" = c("Retnlg", "Cxcr2"),
-                      "43" = c("Stfa2l1", "Il1b", "Gm5483", "H2-Q10", "Irg1"))
-cell_id = tiss$cell_ontology_class %in% c("granulocyte","granulocytopoietic cell")
-
-coldef = setNames(colorRampPalette(brewer.pal(12, "Paired"))(length(unique(cell_label))),unique(cell_label))
-p = DimPlot(subset(tiss,cells = colnames(tiss)[cell_id]), group.by = "cell_ontology_class",label = TRUE,cols = coldef) + NoLegend() + labs(title = NULL)
-
-pl_Gmodule = lapply(G_module,function(module){
-  FeaturePlot_custom(value = cell_block[cell_id,module], coord = visual_space[cell_id,], value_name = "Module Score",title_name = sprintf("Module %s",module)) + labs(subtitle = paste0(G_module_genes[[as.character(module)]],collapse = ","))
-})
-pl_Gmodule = lapply(1:length(pl_Gmodule),function(i){
-  if(i!=3){pl_Gmodule[[i]] + NoLegend()}else{pl_Gmodule[[i]]}})
-
-p = wrap_plots(wrap_plots(p) & theme(axis.title = element_blank(),axis.text = element_blank(), axis.ticks=element_blank(), axis.line = element_blank()),(wrap_plots(pl_Gmodule,nrow = 1) &  theme(plot.title = element_text(size = 15))) + plot_layout(guides = "collect"), nrow = 1, design = "ABBBB")
-
-ggsave(filename = "fig-subtypeG.png", plot = p, width = 5*3, height = 3)
 ```
 
