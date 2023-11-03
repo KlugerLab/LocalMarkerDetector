@@ -1,0 +1,398 @@
+---
+title: "Tutorial for Runing LMD on Mouse Bone Marrow Dataset"
+author: "Ruiqi Li"
+date: '2023-10-12'
+output: pdf_document
+bibliography: references.bib
+---
+
+# Install & Load Packages
+```{r}
+# Install necessary tools if not already present
+if (!requireNamespace("BiocManager", quietly = TRUE)) install.packages("BiocManager")
+if (!requireNamespace("remotes", quietly = TRUE)) install.packages("remotes")
+# Define package lists
+bioc_packages <- c("Seurat",
+                   "clusterProfiler", "AnnotationDbi", "ReactomePA", "org.Mm.eg.db","gprofiler2")
+github_packages <- c("satijalab/seurat-wrappers")
+# Note: repeating packages from LMD_function.R as knitr does not install them properly
+cran_packages <- c("igraph","ggplot2", "cowplot", "RColorBrewer",
+                   "data.table", "dplyr", "patchwork",
+                   "pheatmap", "ggplotify", "ggraph",
+                   "ClusterR", "Rcpp", "RcppArmadillo", "tictoc")
+
+# Install packages
+sapply(cran_packages, function(pkg) if(!requireNamespace(pkg, quietly = TRUE)){install.packages(pkg)})
+sapply(bioc_packages, function(pkg) if (!requireNamespace(pkg, quietly = TRUE)) BiocManager::install(pkg))
+sapply(github_packages, function(pkg) if (!requireNamespace(strsplit(pkg, "/")[[1]][2], quietly = TRUE)) remotes::install_github(pkg))
+library("Seurat")
+library("SeuratWrappers")
+library("pheatmap")
+library("ggplot2")
+library("ggplotify")
+```
+# Create a folder to save results
+```{r}
+folder_path = "marrow_result"
+if (!dir.exists(path)) {
+  # If it doesn't exist, create it
+  dir.create(path)
+} else {
+}
+```
+
+# Preparing input data
+```{r}
+if (!file.exists('facs_Marrow_seurat_tiss.Robj')) {
+   # If load url doesn't work, please download it and load from your working directory
+  options(timeout=6000)
+  download.file("https://figshare.com/ndownloader/files/13092380",
+                destfile = 'facs_Marrow_seurat_tiss.Robj', method = 'libcurl')
+ }
+load('facs_Marrow_seurat_tiss.Robj')
+tiss <- UpdateSeuratObject(tiss)
+```
+We obtain the following objects from this Seurat Obj:
+* `feature_space`: The output of PCA. This matrix contains the first 20 principal components (PCs).
+* `visual_space`: a data.frame with t-SNE coordinates (2D) based on the first 20 PCs.
+* `dat`: a matrix object with the log-normalized expression of genes (rows) in each cell (columns)
+* `cell_label`: Any metadata you wish to visualize and examine related to cells (here we take the cell type annotation)
+```{r}
+DefaultAssay(tiss) <- "RNA"
+n_dim = dim(tiss@reductions$pca@cell.embeddings)[2]
+feature_space = as.matrix(tiss@reductions$pca@cell.embeddings[,1:n_dim])
+visual_space = data.frame(tiss@reductions$tsne@cell.embeddings)
+dat = as.matrix(tiss[[DefaultAssay(tiss)]]@data)
+cell_label = tiss$cell_ontology_class
+```
+
+We process the `dat` by only keep the genes detected in more than 10 cells and less than 50% of cells (genes is "detected" in a cell only if its expression level is greater than the median expression level of that cell)
+
+```{r}
+Gene_detected_count <- apply(dat > apply(dat,2,median),1,sum)
+selected_genes = (Gene_detected_count >= 10) & (Gene_detected_count <= ncol(dat) * 0.5)
+dat = dat[selected_genes,,drop = FALSE]
+```
+
+# Running LMD Step by Step
+
+This provides a step-by-step tutorial for a better understanding of the algorithm. If you want to generate results directly, please skip to 'Running LMD in One Step'
+
+```{r}
+source("LMD_function.R", echo = F)
+```
+
+## Step1: Build KNN Graph
+
+```{r, fig.width=20}
+# Construct knn graph
+knn_result = Symmetric_KNN_graph(knn = 5, feature_space = feature_space)
+
+A = knn_result$adj_matrix # Adjacency Matrix
+W = knn_result$graph # Symmetrized Graph ((A + AT) / 2)
+
+# Plot knn graph
+plot_knn_graph(affinity_m = W, label = cell_label, layout = visual_space)
+```
+
+## Step2: Diffuse Genes on the cell graph
+
+```{r, fig.width=20}
+# Generate $P^{t}, t = 2,4,8,...,max_time$
+P_ls = Obtain_Pls(W = W, max_time = 2^10)
+# Generate initial gene distribution
+rho = Rowwise_normalize(dat[,colnames(W)])
+# Check One Gene Diffusion on Cell graph by time
+gene = "Fcnb"
+print(FeaturePlot_diffusion(coord = visual_space,init_state = rho[gene,],P_ls = P_ls,check_time = c(2,16,128),gene_name = gene))
+```
+
+## Step3: Obtain Diffusion KL score & Cumulative score
+
+```{r}
+# Obtain diffusion KL score
+score_result = fast_calculate_multi_score(W = W, init_state = rho, P_ls = P_ls)
+
+# Check Diffusion KL pattern for several genes
+genes = c("Tlr11","Fcnb","Cd79a","4933425H06Rik","Uchl4","Dock11")
+genes_label = rep(c("good","bad"),each = 3)
+Visualize_score_pattern(score_result, genes = genes, label_class = genes_label, facet_class = NULL)
+
+# Show result
+show_result_lmd(score_result,n = 10)
+```
+
+# Running LMD in one step
+
+```{r}
+lmd_result = LMD(dat, feature_space)
+```
+
+# Identify Gene Modules
+
+## Step1: Deriving Gene Modules
+```{r}
+# Select top1000 genes as local genes
+local_gene = show_result_lmd(lmd_result, n = 1000)
+local_gene = rownames(local_gene)
+
+# Denoising
+# We use ALRA @linderman2022zero to Denoise our data
+tiss <- RunALRA(tiss, assay = "RNA")
+DefaultAssay(tiss) <- "RNA"
+dat_alra = as.matrix(tiss[["alra"]]@data)[local_gene,]
+
+# Calculate Gene-gene co-localization distance
+distance_method = "jaccard"
+dist = Calculate_distance(dat_alra, method = distance_method)
+
+# Hierarchical Tree
+clustering_method = "average"
+gene_hree = hclust(dist, method = clustering_method)
+
+# Obtain Gene modules
+gene_partition = dynamicTreeCut::cutreeDynamic(
+  dendro = gene_hree, 
+  distM = as.matrix(dist), deepSplit = 2,
+  pamStage = TRUE, pamRespectsDendro = TRUE,
+  minClusterSize = 5)
+names(gene_partition) = labels(dist)
+
+# Re-name gene modules based on the order of htree
+gene_partition = as.factor(gene_partition)
+module_order = order(sapply(levels(gene_partition), function(mod) {
+  median(which(gene_partition[gene_hree$order] == mod))
+}))
+levels(gene_partition)[module_order] = seq(nlevels(gene_partition))
+gene_partition = factor(gene_partition,levels = seq(nlevels(gene_partition)))
+rm(module_order)
+```
+
+### Visualize Heatmap
+```{r}
+p = pheatmap(as.matrix(dist),
+              annotation_col = data.frame(Module = gene_partition), 
+              cluster_rows = gene_hree, 
+              cluster_cols = gene_hree,
+              ann_colors = list(Module = setNames(colorRampPalette(brewer.pal(12, "Paired"))(nlevels(gene_partition)),levels(gene_partition))),
+              treeheight_row = 0,
+              col=colorRampPalette(c("firebrick3", "white"))(99),
+              show_colnames = FALSE,
+              show_rownames = FALSE,
+              main = paste(distance_method,
+                           clustering_method,sep = "-"),
+              silent = TRUE )
+as.ggplot(p)
+```
+
+## Step2: Computing Per-Cell Module Activity Scores
+```{r}
+knn = 10; major_vote = 5
+A = Symmetric_KNN_graph(knn = knn, feature_space = feature_space)$'adj_matrix'
+cell_block_loop = lapply(1:100,function(loop){
+  GMM_subsampling(seed = loop, gene_partition, expr_dat = dat, cell_kNN_graph = A, major_vote)
+})
+cell_block_prop = Reduce(`+`, cell_block_loop) / length(cell_block_loop)
+cell_block = cell_block_prop
+```
+
+## Step3: Identify Celltype-specific activated Modules
+```{r}
+cell_label = as.factor(tiss$cell_ontology_class)
+abbrev = levels(cell_label)
+abbrev[grepl("T cell",abbrev)] = "T cell"
+abbrev[grepl("natural killer",abbrev)] = "NK cell"
+abbrev[abbrev == "B cell"] = "Cd3e+ Klrb1+ B cell"
+abbrev[grepl("Slamf1-positive",abbrev)] = "Slamf1+ MPC"
+abbrev[grepl("Slamf1-negative",abbrev)] = "Slamf1- MPC"
+abbrev[grepl("common lymphoid",abbrev)] = "CLP"
+abbrev[grepl("megakaryocyte",abbrev)] = "MEP"
+abbrev[grepl("hematopoietic",abbrev)] = "HSC"
+abbrev[grepl("hematopoietic",abbrev)] = "HSC"
+abbrev[grepl("granulocyte monocyte",abbrev)] = "GMP"
+names(abbrev) = levels(cell_label)
+levels(cell_label) = abbrev[levels(cell_label)]
+
+# Create one-hot vector of Cell Type
+one_hot_matrix <- sapply(unique(cell_label), function(x) as.integer(cell_label == x))
+colnames(one_hot_matrix) = unique(cell_label)
+rownames(one_hot_matrix) = names(cell_label)
+
+# Calculate Jaccard index between module activity & cell type
+jaccard_index <- apply(cell_block, 2, function(module_col) {
+  apply(one_hot_matrix, 2, function(one_hot_col) {
+    1 - philentropy::distance(rbind(module_col,one_hot_col), method = "jaccard", mute.message=TRUE)
+  })
+})
+```
+
+### Annotate Each Celltype-specific activated Modules with its corresponding Celltypes
+```{r}
+module_celltype = apply(jaccard_index,2,function(x){paste(names(which(x > 0.4)),collapse = ",")})
+```
+
+## Transferability of Modules
+### Load Data & Calculate Module Activity
+```{r}
+if (!file.exists('droplet_Marrow_seurat_tiss.Robj')) {
+   # If load url doesn't work, please download it and load from your working directory
+  options(timeout=6000)
+  download.file("https://figshare.com/ndownloader/files/13092380",
+                destfile = 'droplet_Marrow_seurat_tiss.Robj', method = 'libcurl')
+ }
+load('droplet_Marrow_seurat_tiss.Robj')
+tiss_droplet <- UpdateSeuratObject(tiss)
+saveRDS(tiss_droplet, file = "processed_droplet_Marrow_srat.rds")
+
+feature_space_droplet = as.matrix(tiss_droplet@reductions$pca@cell.embeddings[,1:n_dim])
+dat_droplet = as.matrix(tiss_droplet[["RNA"]]@data)
+
+knn = 10; major_vote = 5
+A = Symmetric_KNN_graph(knn = knn, feature_space = feature_space_droplet)$'adj_matrix'
+cell_block_loop = lapply(1:100,function(loop){
+  GMM_subsampling(seed = loop, gene_partition, expr_dat = dat_droplet, cell_kNN_graph = A, major_vote)
+})
+cell_block_prop = Reduce(`+`, cell_block_loop) / length(cell_block_loop)
+cell_block_droplet = cell_block_prop
+```
+
+### Calculate Jaccard Index
+```{r}
+cell_label = tiss_droplet$cell_ontology_class
+cell_label[!cell_label %in% names(abbrev)] = NA
+cell_label = setNames(abbrev[cell_label],names(cell_label))
+
+one_hot_matrix_droplet <- sapply(unique(na.omit(cell_label)), function(x) as.integer(cell_label == x))
+one_hot_matrix_droplet[is.na(one_hot_matrix_droplet)] = 0
+
+jaccard_index_droplet <- apply(cell_block_droplet, 2, function(module_col) {
+  apply(one_hot_matrix_droplet, 2, function(one_hot_col) {
+    1 - philentropy::distance(rbind(module_col,one_hot_col), method = "jaccard", mute.message=TRUE)
+  })
+})
+```
+## Save Intermediate data
+```{r}
+save(gene_partition,dist,gene_hree,cell_block,cell_block_droplet,one_hot_matrix,one_hot_matrix_droplet,jaccard_index,jaccard_index_droplet,file = file.path(folder_path, "module_result.rdata"))
+
+saveRDS(tiss, file = "processed_facs_Marrow_srat.rds")
+```
+
+## Step4: Module Enrichment Analysis
+### GO enrichment Analysis
+```{r}
+library("clusterProfiler")
+library("ReactomePA")
+library("org.Mm.eg.db")
+library("AnnotationDbi")
+
+# Set all genes(after filtering) in the expression matrix as background
+universe_df = data.frame("symbol" = rownames(dat),"entrez" = mapIds(org.Mm.eg.db, keys=rownames(dat), column="ENTREZID", keytype="SYMBOL"))
+
+# Filter GO terms based on p values < 0.05
+ego_result <- lapply(1:nlevels(gene_partition), function(i){
+  enrichGO(gene = names(gene_partition)[gene_partition == i],
+           OrgDb = 'org.Mm.eg.db', # mouse
+           keyType = "SYMBOL",
+           ont = "ALL",
+           pAdjustMethod = "BH",
+           universe = universe_df$symbol,
+           pvalueCutoff = 0.05)
+})
+
+# Only keep modules which has at lease one GO term having adjusted p-value < 0.05
+top_go_clusters <- which(sapply(ego_result, function(x)
+  (x@result$p.adjust[1] < 0.05)))
+
+# Annotate each modules with top5 GO terms
+top_enrich_go <- lapply(top_go_clusters, function(i) ego_result[[i]]@result[1:5,])
+```
+
+### Reactome enrichment Analysis
+
+```{r}
+library("ReactomePA")
+library("org.Mm.eg.db")
+
+# Set all genes(after filtering) in the expression matrix as background
+universe_df = data.frame("symbol" = rownames(dat),"entrez" = mapIds(org.Mm.eg.db, keys=rownames(dat), column="ENTREZID", keytype="SYMBOL"))
+universe_df = universe_df[!is.na(universe_df$entrez),]
+
+# Filter Pathway based on p values < 0.05
+epathway_result <- lapply(1:nlevels(gene_partition), function(i){
+  enrichPathway(gene=universe_df[universe_df$symbol %in% names(gene_partition)[gene_partition == i],"entrez"],
+                organism = "mouse",
+                pAdjustMethod = "BH",
+                pvalueCutoff = 0.05,
+                universe = universe_df$entrez)
+})
+
+# Only keep modules which has at lease one Pathway having adjusted p-value < 0.05
+top_pathway_clusters <- which(sapply(epathway_result, function(x) 
+  (x@result$p.adjust[1] < 0.05)))
+
+# Annotate each modules with top5 Pathway terms
+top_enrich_pathway <- lapply(top_pathway_clusters, function(i) epathway_result[[i]]@result[1:5,])
+```
+
+## Step5: Generate Gene Module Annotation Table
+```{r}
+df_module = data.frame(Module = levels(gene_partition))
+df_module[,"Gene"] = unlist(lapply(levels(gene_partition),function(x){paste(names(gene_partition)[gene_partition == x],collapse = ",")}))
+df_module[,"celltype"] = module_celltype[levels(gene_partition)]
+df_module[top_go_clusters,"GO_description"] = unlist(lapply(top_enrich_go,function(x){
+  des = x[["Description"]]
+  paste(des[!is.na(des)],collapse = ",")
+}
+))
+df_module[top_pathway_clusters,"Pathway_description"] = unlist(lapply(top_enrich_pathway,function(x){
+  des = x[["Description"]]
+  paste(des[!is.na(des)],collapse = ",")
+}))
+df_module[is.na(df_module)] = ""
+write.csv(df_module,file = file.path(folder_path, "module_description.csv"),row.names = FALSE)
+```
+
+## Cell Cycle Modules
+### Reactome analysis
+```{r}
+library("ReactomePA")
+library("org.Mm.eg.db")
+universe_df = data.frame("symbol" = rownames(dat),"entrez" = mapIds(org.Mm.eg.db, keys=rownames(dat), column="ENTREZID", keytype="SYMBOL"))
+universe_df = universe_df[!is.na(universe_df$entrez),]
+module_cc = c(16,18,17,31,32)
+epathway_result_cc <- lapply(module_cc, function(i){
+  enrichPathway(gene=universe_df[universe_df$symbol %in% names(gene_partition)[gene_partition == i],"entrez"],
+                organism = "mouse",
+                pAdjustMethod = "BH",
+                pvalueCutoff = 0.05,
+                universe = universe_df$entrez)
+})
+names(epathway_result_cc) = module_cc
+# Annotate each modules with top5 Pathway terms
+top_enrich_pathway_cc <- do.call(rbind,lapply(1:length(epathway_result_cc), function(i) data.frame(epathway_result_cc[[i]]@result[1:5,],module = module_cc[i])))
+top_enrich_pathway_cc <- top_enrich_pathway_cc[complete.cases(top_enrich_pathway_cc), ]
+top_enrich_pathway_cc = top_enrich_pathway_cc %>% filter(p.adjust < 0.05)
+
+write.csv(top_enrich_pathway_cc,file = file.path(folder_path, "reactome_pathway_cc.csv"))
+```
+
+### Annotate Cell Cycle
+```{r}
+mmus_s = gprofiler2::gorth(cc.genes.updated.2019$s.genes, source_organism = "hsapiens", target_organism = "mmusculus")$ortholog_name
+mmus_g2m = gprofiler2::gorth(cc.genes.updated.2019$g2m.genes, source_organism = "hsapiens", target_organism = "mmusculus")$ortholog_name
+tiss = CellCycleScoring(tiss, s.features = mmus_s, 
+                        g2m.features = mmus_g2m, set.ident = FALSE)
+cell_cycle_table = data.frame(tiss@meta.data[,c("S.Score","G2M.Score","Phase")],"Dataset" = "FACS")
+```
+
+### Transferablity
+```{r}
+tiss_droplet = CellCycleScoring(tiss_droplet, s.features = mmus_s, 
+                        g2m.features = mmus_g2m, set.ident = FALSE)
+cell_cycle_table = rbind(cell_cycle_table,data.frame(tiss_droplet@meta.data[,c("S.Score","G2M.Score","Phase")],"Dataset" = "Droplet"))
+
+write.csv(cell_cycle_table,file = file.path(folder_path, "annotated_cell_cycle.csv"))
+```
+
+
